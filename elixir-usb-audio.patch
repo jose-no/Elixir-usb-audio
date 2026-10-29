@@ -30,10 +30,10 @@ index 4dcbcde..766e165 100644
              o[i] *= 1 << OUT_SHIFT;
          LOAD_MARK(LD_MIX);
 diff --git a/firmware/src/elixir.c b/firmware/src/elixir.c
-index 1a91391..ab95aae 100644
+index 1a91391..cfd3d4f 100644
 --- a/firmware/src/elixir.c
 +++ b/firmware/src/elixir.c
-@@ -11,7 +11,10 @@
+@@ -11,7 +11,11 @@
  #define FELUCCA_OTA 1
  #define FELUCCA_OTA_DRYRUN 0
  #define FELUCCA_CDC 0
@@ -42,6 +42,7 @@ index 1a91391..ab95aae 100644
 +#define FELUCCA_UAC 1                    /* USB audio out to the host (UAC1, 44.1 / 48 kHz): usb.c, audio.c, main.c */
 +#endif
 +#define HALF_FRAMES 128u                 /* audio.c's render size, here so usb.c's ring asserts see it */
++#define UAC_BUF POOL                     /* USB audio's ring and resampler history in .pool: .data+.bss keeps its 4 KB headroom */
  #define FELUCCA_UART 1
  #define FELUCCA_CPU2 1                   /* 17b: the second core, started at power-on (main.c cores_boot, audio.c) */
  #define FM1_CPU1_USED 1
@@ -61,3 +62,28 @@ index 59bc905..84430ab 100644
          t5_nested_ticks += fm1_ticks() - t0;
          return;
      }
+diff --git a/firmware/src/usb.c b/firmware/src/usb.c
+index e19bc67..dbd4dbf 100644
+--- a/firmware/src/usb.c
++++ b/firmware/src/usb.c
+@@ -96,7 +96,10 @@ _Static_assert(UA_HI48 + UA_REND48 + UA_MAXF < UA_N, "the ring holds the band, a
+ #endif
+ #define UAC_MAXP (UA_MAXF * 4u)
+ _Static_assert(UA_HI + HALF_FRAMES + UA_MAXF < UA_N, "the ring holds the band, a render and a packet");
+-static uint32_t ua_ring[UA_N];
++#ifndef UAC_BUF
++#define UAC_BUF                  /* where the ring and the resampler's history go (Elixir: its .pool, elixir.c) */
++#endif
++static uint32_t ua_ring[UA_N] UAC_BUF;
+ static volatile uint32_t ua_w, ua_r;
+ static uint32_t ep4tx[UA_MAXF] __attribute__((aligned(4)));
+ static struct {
+@@ -131,7 +134,7 @@ static struct {
+ #if FELUCCA_UAC_TONE
+     uint32_t tone;
+ #endif
+-} rs;
++} rs UAC_BUF;
+ #endif
+ #endif
+ 

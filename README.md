@@ -14,7 +14,7 @@ MIDI.
 ## The patch
 
 Elixir already carries Felucca's USB audio driver (`firmware/src/usb.c`, `FELUCCA_UAC`) but builds it out and never
-feeds it. [`elixir-usb-audio.patch`](elixir-usb-audio.patch) (18 lines, 3 files) turns it on:
+feeds it. [`elixir-usb-audio.patch`](elixir-usb-audio.patch) (4 files) turns it on:
 
 - `elixir.c`: `FELUCCA_UAC` 1 (overridable with `-DFELUCCA_UAC=0`), and `HALF_FRAMES` defined before `usb.c`, whose ring
   sizing needs it (without this, enabling the flag doesn't compile).
@@ -22,6 +22,9 @@ feeds it. [`elixir-usb-audio.patch`](elixir-usb-audio.patch) (18 lines, 3 files)
   Q15 (what Elixir's copy of `usb.c` expects).
 - `main.c`: `uac_service()` also when TIMER5 interrupts the render, as Felucca does, so the host gets a packet every
   1 ms even while a render takes longer than that.
+- `usb.c` / `elixir.c`: the 2 KB audio ring and the resampler's history go in Elixir's `.pool` (`UAC_BUF`), the same
+  SRAM with its own budget, so main RAM keeps the 4 KB of headroom Elixir's build checks for. In `.bss` they leave
+  2692 B and the build refuses it.
 
 Felucca's own USB audio test suite (`tests/uac_test.c`) passes against Elixir's `usb.c` when fed 16-bit samples:
 descriptors, packet pacing, underruns and overruns, the 44.1 / 48 kHz switch and the resampler.
