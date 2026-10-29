@@ -1,0 +1,109 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Builds Elixir with elixir-usb-audio.patch on a Linux x86-64 runner (the JieLi toolchain runs natively there),
+# checks the package with the installer's own checks, and publishes it as firmware/elixir-usb-audio.fwsc on main,
+# where the installer's "Use the latest build" button fetches it from GitHub Pages.
+name: Build firmware
+
+on:
+  push:
+    branches: [main]
+    paths: [elixir-usb-audio.patch, .github/workflows/build.yml, tools/custom.js, tools/verify_build.mjs]
+  workflow_dispatch:
+    inputs:
+      elixir_ref:
+        description: "dmajka/elixir commit, tag or branch to build (default: the commit the patch was tested on)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-firmware
+  cancel-in-progress: true
+
+env:
+  # the Elixir commit the patch was written and tested against (v0.17 source)
+  ELIXIR_REF_DEFAULT: 1a247769bd371692031fd44aa49a330ff1dcaefe
+  SDK_TAG: AC79NN_SDK_V1.2.1_2023-12-13
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch Elixir and Felucca
+        run: |
+          REF="${{ github.event.inputs.elixir_ref }}"; REF="${REF:-$ELIXIR_REF_DEFAULT}"
+          git clone https://github.com/dmajka/elixir /tmp/elixir
+          git -C /tmp/elixir checkout --quiet "$REF"
+          echo "ELIXIR_SHA=$(git -C /tmp/elixir rev-parse HEAD)" >> "$GITHUB_ENV"
+          git clone --depth 1 https://github.com/hugelton/Felucca /tmp/felucca
+
+      - name: Apply the patch
+        run: |
+          git -C /tmp/elixir apply --check "$GITHUB_WORKSPACE/elixir-usb-audio.patch"
+          git -C /tmp/elixir apply "$GITHUB_WORKSPACE/elixir-usb-audio.patch"
+          grep -n "define FELUCCA_UAC 1" /tmp/elixir/firmware/src/elixir.c
+
+      - name: USB audio host test (Felucca's uac_test against the patched usb.c)
+        run: sh tools/uac_host_test.sh /tmp/elixir /tmp/felucca
+
+      - name: Python packages
+        run: python3 -m pip install --break-system-packages Pillow fonttools
+
+      - name: JieLi toolchain
+        run: |
+          mkdir -p ~/.jieli
+          curl -fL --retry 3 https://pkgman.jieliapp.com/s/linux-toolchain | tar -xJ -C ~/.jieli
+          TC="$(ls -d ~/.jieli/jieli-linux-toolchains-* | sort | tail -1)"
+          ln -sfn "$(basename "$TC")" ~/.jieli/toolchain
+          ~/.jieli/toolchain/pi32v2/bin/clang --version | head -1
+
+      - name: JieLi AC79 SDK (only the three files the package uses)
+        run: |
+          git clone --depth 1 --branch "$SDK_TAG" --filter=blob:none --sparse \
+              https://gitee.com/Jieli-Tech/fw-AC79_AIoT_SDK.git ~/fw-AC79_AIoT_SDK \
+            || git clone --depth 1 --branch "$SDK_TAG" https://gitee.com/Jieli-Tech/fw-AC79_AIoT_SDK.git ~/fw-AC79_AIoT_SDK
+          if [ -f ~/fw-AC79_AIoT_SDK/.git/info/sparse-checkout ]; then
+            git -C ~/fw-AC79_AIoT_SDK sparse-checkout set --no-cone /cpu/wl82/tools/uboot.boot \
+                /cpu/wl82/tools/cfg_tool.bin /cpu/wl82/tools/cfg/eq_cfg_hw.bin
+          fi
+          ls -la ~/fw-AC79_AIoT_SDK/cpu/wl82/tools/uboot.boot
+
+      - name: Build
+        working-directory: /tmp/elixir
+        run: |
+          export JIELI_TOOLCHAIN=~/.jieli/toolchain AC79_SDK=~/fw-AC79_AIoT_SDK
+          ./build.sh
+          ls -la build/elixir.fwsc
+
+      - name: Check the package as the installer does
+        run: |
+          META="$(curl -fsSL https://dmajka.github.io/elixir/install/ | grep -o '"pkg": *"\.\./firmware/[^"]*\.fwsc"' | head -1 | sed 's/.*firmware\///; s/"$//')"
+          curl -fsSL -o /tmp/official.fwsc "https://dmajka.github.io/elixir/firmware/${META:-elixir-v0.17.fwsc}" || rm -f /tmp/official.fwsc
+          node tools/verify_build.mjs /tmp/elixir/build/elixir.fwsc $( [ -f /tmp/official.fwsc ] && echo /tmp/official.fwsc )
+
+      - name: Upload the build
+        uses: actions/upload-artifact@v4
+        with:
+          name: elixir-usb-audio-${{ env.ELIXIR_SHA }}
+          path: /tmp/elixir/build/elixir.fwsc
+
+      - name: Publish to the site
+        run: |
+          mkdir -p firmware
+          cp /tmp/elixir/build/elixir.fwsc firmware/elixir-usb-audio.fwsc
+          SHA256="$(sha256sum firmware/elixir-usb-audio.fwsc | cut -d' ' -f1)"
+          VER="$(grep -o 'ELIXIR_VERSION "[^"]*"' /tmp/elixir/firmware/src/elixir.c | head -1 | cut -d'"' -f2)"
+          printf '{"elixir_version":"%s","elixir_commit":"%s","patch_commit":"%s","built":"%s","sha256":"%s","run":"%s"}\n' \
+            "$VER" "$ELIXIR_SHA" "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%MZ)" "$SHA256" \
+            "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > firmware/build.json
+          cat firmware/build.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add firmware
+          git diff --cached --quiet && { echo "unchanged"; exit 0; }
+          git commit -m "Build Elixir ${VER} with USB audio (elixir ${ELIXIR_SHA::7})"
+          git push

@@ -66,6 +66,7 @@ ul.checks .d { grid-column: 2; color: var(--dim); font-size: 14px; margin-top: -
 #progress { margin-top: 24px; }
 progress { width: 100%; height: 8px; display: block; accent-color: var(--accent-fill); }
 #status { margin-top: 10px; min-height: 1.6em; }
+details.own { margin: 14px 0 0; } details.own summary { cursor: pointer; margin-bottom: 10px; }
 details.log summary { cursor: pointer; color: var(--dim); font-size: 14px; }
 pre { color: var(--dim); font-size: 12px; white-space: pre-wrap; margin-top: 16px; }
 ol, ul.plain { padding-left: 20px; margin: 0 0 14px; } ol li, ul.plain li { margin-bottom: 6px; }
@@ -90,18 +91,25 @@ footer a { color: inherit; }
   <p><button class="alt" id="check" disabled>Check my FM-1</button></p>
   <p id="found"></p>
 
-  <h2><span class="n">2</span>Choose your build</h2>
-  <p>Pick the <code>elixir.fwsc</code> your build made (<code>build/elixir.fwsc</code> in the Elixir checkout, after
-    <code>git apply</code> of <a href="elixir-usb-audio.patch">elixir-usb-audio.patch</a> and <code>./build.sh</code>). It must go onto an FM-1 already running
-    Elixir, Kettle or the official V15; updating Elixir keeps your projects, kit library and settings.</p>
+  <h2><span class="n">2</span>Choose the build</h2>
+  <p>This repo builds Elixir with the <a href="elixir-usb-audio.patch">USB audio patch</a> on GitHub, so there's
+    nothing to build yourself: use the latest build. It goes onto an FM-1 already running Elixir, Kettle or the
+    official V15; updating Elixir keeps your projects, kit library and settings.</p>
+  <p class="row"><button class="alt" id="latest" disabled>Use the latest build</button>
+    <span class="small" id="latest-note">Looking for it…</span></p>
+  <details class="own"><summary class="small">Or use a build of your own</summary>
+  <p class="small">Your own <code>build/elixir.fwsc</code>, from an Elixir checkout after <code>git apply</code> of the
+    patch and <code>./build.sh</code> (the JieLi toolchain and SDK; see the
+    <a href="https://github.com/jose-no/elixir-usb-audio#build">readme</a>).</p>
   <label class="drop" id="drop">
     <span class="file" id="fname">Drop the .fwsc here, or choose it</span><br>
     <input id="file" type="file" accept=".fwsc">
   </label>
+  </details>
   <ul class="checks" id="checks" hidden></ul>
   <p class="row"><button id="go" disabled>Install this build</button></p>
   <p class="small">If an install is cut off (cable pulled, page closed), the FM-1 stays in update mode. Plug it back
-    in, choose the same file and press Install again to finish.</p>
+    in, choose the same build and press Install again to finish.</p>
 
   <div id="progress" hidden><progress id="bar" max="100" value="0"></progress></div>
   <p id="status"></p>
@@ -761,13 +769,14 @@ const MSG = {
 };
 const say = (k, arg = "") => { $("status").textContent = (MSG[k] ?? k) + arg; };
 const log = (t) => { $("log").textContent += t + "\n"; };
-let build = null, official = null, stock = null, writing = false, epoch = 0, stockEpoch = 0;
+let latestInfo = null, build = null, official = null, stock = null, writing = false, epoch = 0, stockEpoch = 0;
 const lock = (on) => {
   writing = on;
   $("go").disabled = on || !build;
   $("official-go").disabled = on || !official;
   $("stock-go").disabled = on || !stock;
   $("file").disabled = $("stock-file").disabled = on;
+  $("latest").disabled = on || !latestInfo;
   $("check").disabled = on || !navigator.requestMIDIAccess;
 };
 window.addEventListener("beforeunload", (e) => { if (writing) { e.preventDefault(); e.returnValue = MSG.leave; } });
@@ -869,13 +878,17 @@ function showChecks(list) {
   ul.hidden = !list.length;
 }
 
-async function choose(file) {
+// a package (bytes) under a name: the checks, and Install when they pass
+async function useBytes(name, bytesP) {
   const my = ++epoch;
   build = null; lock(writing);
-  if (!file) { $("fname").textContent = "Drop the .fwsc here, or choose it"; showChecks([]); return; }
-  $("fname").textContent = file.name;
+  $("fname").textContent = name;
   showChecks([{ state: "info", label: "Checking…" }]);
-  const bytes = new Uint8Array(await file.arrayBuffer());
+  let bytes;
+  try { bytes = await bytesP; } catch (e) {
+    if (my === epoch) showChecks([{ state: "fail", label: "Couldn't read the build", detail: e.message }]);
+    return;
+  }
   const off = await officialBytes;
   if (my !== epoch) return;
   const r = checkBuild(bytes, off.bytes);
@@ -883,6 +896,32 @@ async function choose(file) {
   if (r.ok) build = { image: r.image, product: r.product, warnings: r.checks.filter((c) => c.state === "warn").map((c) => c.label) };
   lock(writing);
 }
+async function choose(file) {
+  if (!file) { ++epoch; build = null; lock(writing); $("fname").textContent = "Drop the .fwsc here, or choose it"; showChecks([]); return; }
+  return useBytes(file.name, file.arrayBuffer().then((b) => new Uint8Array(b)));
+}
+
+// the latest build the workflow published next to this page (firmware/), and what it was built from
+const LATEST = "firmware/elixir-usb-audio.fwsc";
+fetch("firmware/build.json", { cache: "no-store" }).then((r) => r.ok ? r.json() : null).catch(() => null).then((info) => {
+  latestInfo = info;
+  if (!info) { $("latest-note").textContent = "No build published yet: the build runs on GitHub after each change to the patch."; return; }
+  const when = new Date(info.built), commit = (info.elixir_commit || "").slice(0, 7);
+  $("latest-note").textContent = `Elixir ${info.elixir_version || "?"} (${commit}), built ${isNaN(when) ? info.built : when.toLocaleDateString()}`;
+  $("latest").disabled = writing;
+});
+$("latest").addEventListener("click", () => {
+  if (writing || !latestInfo) return;
+  useBytes(`Latest build: Elixir ${latestInfo.elixir_version || ""} with USB audio`, fetch(LATEST, { cache: "no-store" }).then(async (r) => {
+    if (!r.ok) throw new Error(`${LATEST}: HTTP ${r.status}`);
+    const b = new Uint8Array(await r.arrayBuffer());
+    if (latestInfo.sha256) {
+      const d = [...new Uint8Array(await crypto.subtle.digest("SHA-256", b))].map((x) => x.toString(16).padStart(2, "0")).join("");
+      if (d !== latestInfo.sha256) throw new Error("the download doesn't match the published checksum: reload the page");
+    }
+    return b;
+  }));
+});
 $("file").addEventListener("change", () => choose($("file").files[0]));
 const drop = $("drop");
 drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });

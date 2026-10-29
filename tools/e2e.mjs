@@ -1,15 +1,30 @@
-// Headless Chrome test of elixir-usb-audio-installer.html: a simulated FM-1 (running Elixir) behind a mock Web MIDI,
-// the official package served for github.io. Checks the build checks shown, the button states, a full install
-// (every byte the loader reads is the chosen package's image) and the check-my-FM-1 text.
+// Headless Chrome test of the installer (index.html): a simulated FM-1 (running Elixir) behind a mock Web MIDI, the
+// official package served for github.io, the published build (firmware/) served next to the page. Checks the
+// latest-build button (none published, published, a checksum mismatch), the build checks shown for chosen files, the
+// button states, a full install (every byte the loader reads is the build's image) and the check-my-FM-1 text.
+//   FIX=dir-with-fixtures node tools/e2e.mjs        (fixtures: tools/fixtures.mjs; Playwright with Chromium)
 import { chromium } from "/opt/npm-tools/node_modules/playwright/index.mjs";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 
-const DIR = new URL(".", import.meta.url).pathname;
+const PAGE = new URL("../index.html", import.meta.url).pathname;
+const DIR = (process.env.FIX || ".").replace(/\/?$/, "/");
 const OFFICIAL = readFileSync("/tmp/elixir-site/firmware/elixir-v0.17.fwsc");
+const BUILD = readFileSync(DIR + "uac.fwsc");
+const sha = createHash("sha256").update(BUILD).digest("hex");
+let published = "none";                              // none | ok | badsha
 const server = createServer((req, res) => {
+  if (req.url.startsWith("/firmware/build.json")) {
+    if (published === "none") { res.statusCode = 404; res.end(); return; }
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ elixir_version: "v0.17", elixir_commit: "1a247769bd37", built: "2026-10-29T16:30Z",
+      sha256: published === "ok" ? sha : "0".repeat(64) }));
+    return;
+  }
+  if (req.url.startsWith("/firmware/elixir-usb-audio.fwsc")) { res.end(BUILD); return; }
   res.setHeader("Content-Type", "text/html");
-  res.end(readFileSync(DIR + "elixir-usb-audio-installer.html"));
+  res.end(readFileSync(PAGE));
 }).listen(8791);
 
 // the simulated FM-1, in the page: identity handshake, step 1 (a few reads, then 0xE0000000), the loader as
@@ -68,7 +83,29 @@ await page.goto("http://localhost:8791/");
 
 await page.waitForFunction(() => document.getElementById("official-note").textContent.endsWith(".fwsc"));
 check(!(await page.isDisabled("#official-go")), "official package fetched; Reinstall official Elixir enabled");
-check(await page.isDisabled("#go"), "Install disabled before a file is chosen");
+check(await page.isDisabled("#go"), "Install disabled before a build is chosen");
+await page.waitForFunction(() => !/Looking/.test(document.getElementById("latest-note").textContent));
+check(await page.isDisabled("#latest") && /No build published yet/.test(await page.textContent("#latest-note")),
+  "nothing published: latest-build button disabled, says so");
+
+const latest = async () => {
+  await page.waitForFunction(() => !document.getElementById("latest").disabled);
+  await page.click("#latest");
+  await page.waitForFunction(() => !/Checking/.test(document.getElementById("checks").textContent));
+  return page.$$eval("#checks li", (ls) => ls.map((l) => l.className + ":" + l.querySelector(".l").textContent));
+};
+published = "badsha";
+await page.reload();
+let c = await latest();
+check(c.length === 1 && /^fail:Couldn't read the build/.test(c[0]) && await page.isDisabled("#go"),
+  "published build with a wrong checksum: refused, Install disabled");
+published = "ok";
+await page.reload();
+await page.waitForFunction(() => document.getElementById("official-note").textContent.endsWith(".fwsc"));
+check(/Elixir v0\.17 \(1a24776\), built/.test(await page.textContent("#latest-note")), "latest build described: " + await page.textContent("#latest-note"));
+c = await latest();
+check(c.length === 5 && c.every((x) => x.startsWith("ok")), "latest build: 5 checks ok");
+check(!(await page.isDisabled("#go")), "Install enabled for the latest build");
 
 await page.click("#check");
 await page.waitForFunction(() => /FM-1_900/.test(document.getElementById("found").textContent));
@@ -79,17 +116,16 @@ const choose = async (f) => {
   await page.waitForFunction(() => !/Checking/.test(document.getElementById("checks").textContent));
   return page.$$eval("#checks li", (ls) => ls.map((l) => l.className + ":" + l.querySelector(".l").textContent));
 };
-let c = await choose("corrupt.fwsc");
+c = await choose("corrupt.fwsc");
 check(c.length === 1 && c[0].startsWith("fail") && await page.isDisabled("#go"), "corrupt file: one failure, Install disabled");
 c = await choose("fakeofficial.fwsc");
 check(c.at(-1).startsWith("fail") && await page.isDisabled("#go"), "official-identity file refused, Install disabled");
 c = await choose("official.fwsc");
 check(c.some((x) => /^warn:No USB audio/.test(x)) && c.some((x) => /^info:This is the official/.test(x)), "official build: warns no USB audio, says it's the official one");
-c = await choose("uac.fwsc");
-check(c.length === 5 && c.every((x) => x.startsWith("ok")), "USB audio build: 5 checks ok: " + c.map((x) => x.split(":")[1]).join(" | "));
-check(!(await page.isDisabled("#go")), "Install enabled for a passing build");
+c = await latest();
+check(c.length === 5 && c.every((x) => x.startsWith("ok")), "back to the latest build: 5 checks ok: " + c.map((x) => x.split(":")[1]).join(" | "));
 
-const want = (await import("/tmp/elixir/web/fm1pkg.js")).logicalImage(new Uint8Array(readFileSync(DIR + "uac.fwsc")));
+const want = (await import("/tmp/elixir/web/fm1pkg.js")).logicalImage(new Uint8Array(BUILD));
 await page.evaluate((n) => { window.__sim.imageLen = n; }, want.length);   // (the real loader reads the length from the package)
 const t0 = Date.now();
 await page.click("#go");
@@ -102,8 +138,7 @@ check(JSON.stringify(await page.evaluate(() => window.__sim.log)) === '["staged"
 check(!(await page.isDisabled("#go")) && !(await page.isDisabled("#check")), "buttons unlocked after the install");
 check(errors.length === 0, "no page errors" + (errors.length ? ": " + errors.join("; ") : ""));
 
-console.log("LOG:\n" + await page.textContent("#log")); console.log("SIM:", JSON.stringify(await page.evaluate(() => ({ mode: window.__sim.mode, log: window.__sim.log }))));
-await page.screenshot({ path: DIR + "shot.png", fullPage: true });
+if (process.env.SHOT) await page.screenshot({ path: process.env.SHOT, fullPage: true });
 await browser.close();
 server.close();
 console.log(failed ? `e2e: ${failed} FAILED` : "e2e: ok");

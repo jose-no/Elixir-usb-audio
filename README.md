@@ -30,6 +30,15 @@ USB audio carries the mix after the MASTER pot, so turn the FM-1 up while record
 
 ## Build
 
+You don't have to: GitHub Actions ([`.github/workflows/build.yml`](.github/workflows/build.yml)) builds it on every
+change to the patch, on a Linux x86-64 runner where JieLi's toolchain runs natively. It clones Elixir at the commit
+the patch was tested on, applies the patch, runs Felucca's USB audio host test against the patched `usb.c`, builds,
+checks the package with the installer's own checks (refusing it without USB audio), and publishes it as
+[`firmware/elixir-usb-audio.fwsc`](firmware/) with `firmware/build.json` (Elixir version and commit, SHA-256, the run).
+Run it by hand under Actions → Build firmware → Run workflow, optionally with another Elixir commit, tag or branch.
+
+To build locally instead:
+
 ```sh
 git clone https://github.com/dmajka/elixir && cd elixir
 git apply /path/to/elixir-usb-audio.patch
@@ -41,12 +50,13 @@ git apply /path/to/elixir-usb-audio.patch
 
 ## Install
 
-Open the [installer](https://jose-no.github.io/elixir-usb-audio/), choose `build/elixir.fwsc` and press Install. It
-uses Elixir's updater (`web/fm1ota.js`) and package reader (`web/fm1pkg.js`) unchanged; the file is checked in the
-browser and never uploaded. Before it will install, the page checks that the package is intact (every CRC), reports
-an alternative-firmware identity (FM-1_9xx) and has Elixir's flash layout. It also reports whether USB audio is built
-in and whether the update loader matches the official Elixir release. Updating Elixir keeps your projects. The page
-can also reinstall the official Elixir release or return the FM-1 to M-VAVE's V15.
+Open the [installer](https://jose-no.github.io/elixir-usb-audio/) and press **Use the latest build** (or choose your
+own `build/elixir.fwsc` under "Or use a build of your own"), then **Install this build**. It uses Elixir's updater
+(`web/fm1ota.js`) and package reader (`web/fm1pkg.js`) unchanged; nothing is uploaded, and the latest build is checked
+against the SHA-256 the workflow published. Before it will install, the page checks that the package is intact (every
+CRC), reports an alternative-firmware identity (FM-1_9xx) and has Elixir's flash layout. It also reports whether USB
+audio is built in and whether the update loader matches the official Elixir release. Updating Elixir keeps your
+projects. The page can also reinstall the official Elixir release or return the FM-1 to M-VAVE's V15.
 
 `tools/fm1_install.py build/elixir.fwsc` from Elixir's repo works too.
 
@@ -54,9 +64,11 @@ can also reinstall the official Elixir release or return the FM-1 to M-VAVE's V1
 
 - `index.html`: the installer, built by `tools/build_page.py` from `tools/page.html`, Elixir's `web/fm1pkg.js` and
   `web/fm1ota.js`, and `tools/custom.js` (the build checks).
+- `tools/verify_build.mjs`, `tools/uac_host_test.sh`: the workflow's checks of a build and of the patched `usb.c`.
 - `tools/test_check.mjs`, `tools/fixtures.mjs`: the build checks against the official package and altered copies.
-  `tools/e2e.mjs`: the page in headless Chrome (Playwright) against a simulated FM-1, through a full install. They
-  expect an Elixir checkout at `/tmp/elixir` and its published package at `/tmp/elixir-site/firmware/`.
+  `tools/e2e.mjs`: the page in headless Chrome (Playwright) against a simulated FM-1: the latest-build button
+  (none published, published, a bad checksum), chosen files, and a full install. They expect an Elixir checkout at
+  `/tmp/elixir` and its published package at `/tmp/elixir-site/firmware/`.
 
 ## Licence
 
