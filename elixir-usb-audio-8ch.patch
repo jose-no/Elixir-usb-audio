@@ -12,10 +12,10 @@ index 766e165..a80a7f0 100644
              uac_tap(o, HALF_FRAMES);
  #endif
 diff --git a/firmware/src/elixir.c b/firmware/src/elixir.c
-index cfd3d4f..9d82a5f 100644
+index cfd3d4f..47ede9f 100644
 --- a/firmware/src/elixir.c
 +++ b/firmware/src/elixir.c
-@@ -16,6 +16,13 @@
+@@ -16,6 +16,16 @@
  #endif
  #define HALF_FRAMES 128u                 /* audio.c's render size, here so usb.c's ring asserts see it */
  #define UAC_BUF POOL                     /* USB audio's ring and resampler history in .pool: .data+.bss keeps its 4 KB headroom */
@@ -24,6 +24,9 @@ index cfd3d4f..9d82a5f 100644
 +#endif
 +#if UAC_CH > 2u
 +#define FELUCCA_UAC_48K 0                /* (the resampler is stereo: 44.1 kHz only) */
++#undef UAC_BUF
++#define UAC_BUF RAMBUF                   /* the 8 KB ring in .ram_buf (RAMTEXT, beside the reverb's lines): the pool keeps
++                                          * its 8 KB headroom (build.py); .ram_buf has 8.3 KB free without it */
 +#endif
 +#define USB_MULTI (FELUCCA_UAC && UAC_CH > 2u)
  #define FELUCCA_UART 1

@@ -56,7 +56,7 @@ What it changes:
 - `engine.c`: the USB frames each block; the dry mix back in for the FM-1's output after the master chain.
 - `ui.c`, `ui_draw.c`, `project.c`: the USB AUDIO page and the setting (in the settings' padding: no format change).
 
-The 8 KB ring and the taps live in `.pool`. Tests: `tools/usb8_driver_test.c` (descriptors; a 10 s stream at the
+The 8 KB ring lives in `.ram_buf` (RAMTEXT, beside the reverb's lines, about 100 B to spare) and the taps in `.pool`, so main RAM keeps its 4 KB and the pool its 8 KB of headroom, as Elixir's build requires. Tests: `tools/usb8_driver_test.c` (descriptors; a 10 s stream at the
 I2S rate with every frame in order and all 8 channels in place; underruns and overruns) and
 `tools/usb8_engine_test.c` (the real engine: USB 1–2 equal the output in MIX; the voices before pan; in FX mode the
 output equals MIX mode's with the master neutral, USB 1–2 silent with no sends and carrying the delay and reverb
