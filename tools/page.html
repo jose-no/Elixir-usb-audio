@@ -1,0 +1,347 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-only
+     An installer for a locally built Elixir with USB audio, after Elixir's install page (web/install.html), itself
+     after Felucca's (Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments). The updater (fm1ota.js)
+     and the package reader (fm1pkg.js) are Elixir's, unchanged, inlined below; the build checks are custom.js.
+     Unofficial: not made by or endorsed by Elixir's, Felucca's or the FM-1's authors. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Elixir USB Audio</title>
+<style>
+:root {
+  --bg: #faf8f4; --fg: #1d1b18; --dim: #6a645a; --line: #e5dfd3; --card: #ffffff; --well: #f1ede5;
+  --accent: #a85f00; --accent-fill: #f0a43a; --accent-ink: #1d1b18; --warn: #a33a00;
+  --ok: #2f7a3a; --fail: #b3261e; --radius: 10px; color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #131210; --fg: #f2ede3; --dim: #a29b8e; --line: #2d2a25; --card: #1b1a17; --well: #201e1b;
+    --accent: #f5b04f; --warn: #ff9a5c; --ok: #7fcf8a; --fail: #ff8a80; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #131210; --fg: #f2ede3; --dim: #a29b8e; --line: #2d2a25; --card: #1b1a17; --well: #201e1b;
+  --accent: #f5b04f; --warn: #ff9a5c; --ok: #7fcf8a; --fail: #ff8a80; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); -webkit-font-smoothing: antialiased;
+       font: 17px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif; }
+a { color: var(--accent); text-underline-offset: 2px; }
+p { margin: 0 0 14px; }
+code { font: 0.88em ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--well); padding: 1px 5px; border-radius: 4px; }
+.wrap { max-width: 640px; margin: 0 auto; padding: 40px 16px 16px; }
+.small { color: var(--dim); font-size: 14px; }
+h1 { font-size: 32px; font-weight: 650; margin: 0 0 8px; line-height: 1.2; letter-spacing: -0.01em; }
+h1 .tag { display: inline-block; vertical-align: middle; font-size: 13px; font-weight: 600; letter-spacing: .02em;
+          padding: 3px 9px; margin-left: 8px; border-radius: 99px; background: var(--accent-fill); color: var(--accent-ink); }
+h2 { font-size: 19px; font-weight: 600; margin: 40px 0 10px; padding-top: 24px; border-top: 1px solid var(--line); line-height: 1.2; }
+h2 .n { display: inline-grid; place-items: center; width: 26px; height: 26px; margin-right: 10px; border-radius: 50%;
+        font-size: 14px; background: var(--accent-fill); color: var(--accent-ink); }
+.callout { padding: 14px 18px; border-radius: 0 var(--radius) var(--radius) 0; background: var(--well); margin: 0 0 14px;
+           font-size: 15px; border-left: 3px solid var(--warn); }
+.callout p:last-child { margin: 0; }
+button { display: inline-block; font: inherit; font-size: 16px; font-weight: 600; line-height: 1.2; padding: 11px 20px;
+         border-radius: 8px; border: 1px solid transparent; cursor: pointer; background: var(--accent-fill); color: var(--accent-ink); }
+button:hover:not(:disabled) { filter: brightness(1.06); }
+button.alt { background: transparent; color: var(--fg); border-color: var(--line); }
+button.alt:hover:not(:disabled) { border-color: var(--dim); }
+button:disabled { opacity: .35; cursor: default; }
+.row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+#found { min-height: 1.6em; font-weight: 600; }
+.drop { display: block; border: 1.5px dashed var(--line); border-radius: var(--radius); padding: 18px; background: var(--card);
+        cursor: pointer; transition: border-color .15s; }
+.drop:hover, .drop.over { border-color: var(--accent-fill); }
+.drop input { font-size: 14px; max-width: 100%; margin-top: 6px; }
+.drop .file { font-weight: 600; word-break: break-all; }
+ul.checks { list-style: none; padding: 0; margin: 14px 0; }
+ul.checks li { display: grid; grid-template-columns: 22px 1fr; gap: 4px 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+ul.checks li:last-child { border-bottom: 0; }
+ul.checks .i { font-weight: 700; text-align: center; line-height: 1.6; }
+ul.checks .ok .i { color: var(--ok); } ul.checks .warn .i { color: var(--warn); }
+ul.checks .fail .i { color: var(--fail); } ul.checks .info .i { color: var(--dim); }
+ul.checks .l { font-weight: 600; font-size: 15px; }
+ul.checks .d { grid-column: 2; color: var(--dim); font-size: 14px; margin-top: -4px; }
+#progress { margin-top: 24px; }
+progress { width: 100%; height: 8px; display: block; accent-color: var(--accent-fill); }
+#status { margin-top: 10px; min-height: 1.6em; }
+details.log summary { cursor: pointer; color: var(--dim); font-size: 14px; }
+pre { color: var(--dim); font-size: 12px; white-space: pre-wrap; margin-top: 16px; }
+ol, ul.plain { padding-left: 20px; margin: 0 0 14px; } ol li, ul.plain li { margin-bottom: 6px; }
+footer { max-width: 640px; margin: 48px auto 0; padding: 28px 16px 48px; border-top: 1px solid var(--line); font-size: 14px; color: var(--dim); }
+footer a { color: inherit; }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <h1>Elixir with USB audio <span class="tag">custom build</span></h1>
+  <p>Installs your own build of Elixir (the one with the USB audio patch) on an M-VAVE FM-1 over USB, from this page.
+    Chrome or Edge (Web MIDI). The file never leaves your computer.</p>
+
+  <div class="callout"><p><strong>Untested firmware.</strong> USB audio has not been tested in Elixir on a real FM-1.
+    If a build crashes as it starts, the FM-1 can only be recovered with the
+    <a href="https://github.com/kurogedelic/FM-1-transporter" target="_blank" rel="noopener">FM-1-transporter</a>.
+    This page and the build are unofficial, with no warranty; Elixir's author hasn't made or reviewed them.</p></div>
+  <p class="small">Connect the FM-1 directly with a USB data cable, close other apps that use MIDI (including a DAW),
+    and allow MIDI (SysEx) when the browser asks. Don't unplug the cable or close this page while it writes.</p>
+
+  <h2><span class="n">1</span>Check what your FM-1 runs</h2>
+  <p><button class="alt" id="check" disabled>Check my FM-1</button></p>
+  <p id="found"></p>
+
+  <h2><span class="n">2</span>Choose your build</h2>
+  <p>Pick the <code>elixir.fwsc</code> your build made (<code>build/elixir.fwsc</code> in the Elixir checkout, after
+    <code>git apply</code> of <a href="elixir-usb-audio.patch">elixir-usb-audio.patch</a> and <code>./build.sh</code>). It must go onto an FM-1 already running
+    Elixir, Kettle or the official V15; updating Elixir keeps your projects, kit library and settings.</p>
+  <label class="drop" id="drop">
+    <span class="file" id="fname">Drop the .fwsc here, or choose it</span><br>
+    <input id="file" type="file" accept=".fwsc">
+  </label>
+  <ul class="checks" id="checks" hidden></ul>
+  <p class="row"><button id="go" disabled>Install this build</button></p>
+  <p class="small">If an install is cut off (cable pulled, page closed), the FM-1 stays in update mode. Plug it back
+    in, choose the same file and press Install again to finish.</p>
+
+  <div id="progress" hidden><progress id="bar" max="100" value="0"></progress></div>
+  <p id="status"></p>
+  <details class="log" id="logbox"><summary>Details</summary><pre id="log"></pre></details>
+
+  <h2><span class="n">3</span>Use it on iOS</h2>
+  <ol>
+    <li>Connect the FM-1 to the iPhone or iPad (USB-C, or Apple's Lightning to USB 3 camera adapter with power).</li>
+    <li>In an app that records from an audio interface (AUM, GarageBand, Loopy, Koala…), pick the FM-1 as the input.
+      It sends the master mix, 16-bit stereo, at 44.1 or 48 kHz (the app picks).</li>
+    <li>The MASTER pot sets the USB level too, so keep it up while recording.</li>
+    <li>On the FM-1, open CONFIG → LOAD while a busy pattern plays and the app records, and note the CPU and PEAK
+      figures: that's the one cost of USB audio nobody has measured yet.</li>
+  </ol>
+
+  <h2><span class="n">4</span>Going back</h2>
+  <p>To the official Elixir release (keeps your projects):</p>
+  <p><button class="alt" id="official-go" disabled>Reinstall official Elixir</button>
+    <span class="small" id="official-note">Fetching the official package…</span></p>
+  <p>To M-VAVE's official V15 (Elixir's projects are lost: back them up first on Elixir's
+    <a href="https://dmajka.github.io/elixir/library/" target="_blank" rel="noopener">library page</a>). Select the
+    unmodified <code>FM-1.fwsc</code> from <a href="https://www.m-vave.com/download" target="_blank" rel="noopener">M-VAVE's
+    download page</a>; only the exact V15 file is accepted.</p>
+  <p><input id="stock-file" type="file" accept=".fwsc"></p>
+  <p><button class="alt" id="stock-go" disabled>Install official V15</button></p>
+</main>
+<footer>
+  Elixir is Dan Majka's (@dmajka) port of the Erica Synths LXR-02 firmware to the FM-1 (GPL-3.0), on Felucca's hardware layer,
+  USB, updater and package code (Leo Kuroshita (@kurogedelic), Hügelton Instruments, GPL-3.0). This page uses
+  Elixir's <code>fm1ota.js</code> and <code>fm1pkg.js</code> unchanged and is GPL-3.0, no warranty.
+  <a href="https://github.com/dmajka/elixir" target="_blank" rel="noopener">Elixir's source</a> ·
+  <a href="https://github.com/jose-no/elixir-usb-audio" target="_blank" rel="noopener">this page's source</a> ·
+  <a href="https://dmajka.github.io/elixir/install/" target="_blank" rel="noopener">official installer</a>.
+  Not affiliated with or endorsed by Erica Synths, M-VAVE, Hügelton Instruments or Elixir's author.
+</footer>
+<script type="module">
+/*LIB*/
+const $ = (id) => document.getElementById(id);
+const OFFICIAL_SITE = "https://dmajka.github.io/elixir/";
+const OFFICIAL_FALLBACK = OFFICIAL_SITE + "firmware/elixir-v0.17.fwsc";
+const MSG = {
+  nomidi: "This browser has no Web MIDI. Open the page in Chrome or Edge, served from localhost (python3 -m http.server in its folder).",
+  start: "Starting", verify: "The FM-1 is checking the package", write: "Writing",
+  loader: "Switching to update mode (the FM-1's screen goes blank: that's normal)",
+  reboot: "Restarting into the new firmware", done: "Done. ",
+  stopped: "Stopped. Replug the USB cable and press Install again.",
+  error: "Error: ",
+  denied: "MIDI (SysEx) access was not allowed. Allow MIDI in the site settings (address bar) and try again.",
+  notfound: "FM-1 not found. Check the USB cable (a data cable), close other apps that use MIDI, and try again.",
+  model: "The connected device is not an FM-1.",
+  lost: "The USB connection was lost. Replug it and press Install again.",
+  noloader: "The FM-1 in update mode was not found. Replug the USB cable and press Install again (it stays in " +
+    "update mode until the write is finished).",
+  noreturn: "The FM-1 did not come back. Turn it off and on.",
+  mismatch: "Written, but the FM-1 reports another version: ",
+  leave: "Writing. Do not close the page.",
+};
+const say = (k, arg = "") => { $("status").textContent = (MSG[k] ?? k) + arg; };
+const log = (t) => { $("log").textContent += t + "\n"; };
+let build = null, official = null, stock = null, writing = false, epoch = 0, stockEpoch = 0;
+const lock = (on) => {
+  writing = on;
+  $("go").disabled = on || !build;
+  $("official-go").disabled = on || !official;
+  $("stock-go").disabled = on || !stock;
+  $("file").disabled = $("stock-file").disabled = on;
+  $("check").disabled = on || !navigator.requestMIDIAccess;
+};
+window.addEventListener("beforeunload", (e) => { if (writing) { e.preventDefault(); e.returnValue = MSG.leave; } });
+
+// the official Elixir package: the loader comparison and "Reinstall official Elixir". The newest from the install
+// page's metadata, else the version this page was made against.
+const officialBytes = (async () => {
+  let url = OFFICIAL_FALLBACK;
+  try {
+    const html = await (await fetch(OFFICIAL_SITE + "install/", { cache: "no-store" })).text();
+    const m = /"pkg":\s*"\.\.\/(firmware\/[^"]+\.fwsc)"/.exec(html);
+    if (m) url = OFFICIAL_SITE + m[1];
+  } catch (_) { /* the fallback */ }
+  try {
+    const r = await fetch(url, { cache: "no-store" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return { bytes: new Uint8Array(await r.arrayBuffer()), name: url.split("/").pop() };
+  } catch (e) { return { bytes: null, error: e.message }; }
+})();
+
+officialBytes.then((o) => {
+  if (!o.bytes) { $("official-note").textContent = `Couldn't fetch it (${o.error}); use Elixir's own install page.`; return; }
+  const r = checkBuild(o.bytes, null);
+  if (!r.ok) { $("official-note").textContent = "The fetched package didn't pass the checks; use Elixir's own page."; return; }
+  official = { image: r.image, product: r.product };
+  $("official-note").textContent = o.name;
+  lock(writing);
+});
+
+async function midi() {
+  try { return await navigator.requestMIDIAccess({ sysex: true }); } catch (e) { say("denied"); return null; }
+}
+function notFound(access) {
+  const names = [...new Set([...access.inputs.values()].map((i) => i.name || "(no name)"))];
+  return MSG.notfound + (names.length ? ` MIDI ports seen: ${names.join(", ")}.` : " The browser sees no MIDI ports at all.");
+}
+function describe(dev) {
+  const id = dev.id, name = dev.name || "";
+  if (/^ota-/i.test(id.model)) return "In update mode: an install was cut off. Choose the same file and press Install to finish it.";
+  if (id.model !== "FM-1") return `${id.text}: not an FM-1.`;
+  if (id.version >= 900 && /elixir|kettle/i.test(name))
+    return `${id.text}: Elixir (or Kettle) is installed. Ready: choose your build in step 2. Your projects are kept.`;
+  if (id.version >= 900 && /felucca/i.test(name))
+    return `${id.text}: Felucca is installed. Installing Elixir replaces Felucca's saved data: back it up on Felucca's page first.`;
+  if (id.version === 15) return `${id.text}: official V15. Ready: choose your build in step 2.`;
+  if (id.version >= 900) return `${id.text}: an alternative firmware. If it isn't Elixir, Kettle or Felucca, return it to V15 with its own page first.`;
+  return `${id.text}: an official version other than V15. Install V15 first (step 4), then come back.`;
+}
+const steps = (len) => {
+  let top = 0;
+  return (k, n, addr) => {
+    let pct = null;
+    if (k !== "verify" && k !== "write") log(`${k} ${n ?? ""}`);
+    else if (n % 100 === 1) log(`${k} ${n}`);
+    if (k === "start") pct = 1;
+    if (k === "verify") pct = 1 + 9 * Math.min(n / 74, 1);
+    if (k === "loader") pct = 10;
+    if (k === "write") { top = Math.max(top, addr ?? n * 256); pct = 10 + 85 * Math.min(top / len, 1); }
+    if (k === "reboot") pct = 97;
+    if (k === "done") pct = 100;
+    if (pct === null) return;
+    $("bar").value = Math.max($("bar").value, pct);
+    say(k, k === "verify" || k === "write" ? ` ${Math.round($("bar").value)}%` : k === "done" ? `The FM-1 runs ${n}.` : "");
+  };
+};
+async function run(img, product) {
+  const access = await midi();
+  if (!access) return;
+  $("progress").hidden = false; $("bar").value = 0; $("log").textContent = "";
+  try {
+    const up = new Updater(access, log), step = steps(img.length);
+    const ota = await up.find((id) => /^ota-/i.test(id.model));
+    if (ota) {
+      ota.link.close();
+      say((await up.resume(img, step, product)) ? "done" : "stopped");
+    } else {
+      await up.install(img, product, step);
+    }
+  } catch (e) {
+    if (e && e.code === "notfound") $("status").textContent = notFound(access);
+    else if (e && e.code && MSG[e.code]) say(e.code, e.detail || "");
+    else say("error", e && e.message);
+    log(String(e && e.stack || e));
+    $("logbox").open = true;
+  }
+}
+
+const ICON = { ok: "✓", warn: "!", fail: "✕", info: "i" };
+function showChecks(list) {
+  const ul = $("checks");
+  ul.textContent = "";
+  for (const c of list) {
+    const li = document.createElement("li"), i = document.createElement("span"), l = document.createElement("span");
+    li.className = c.state; i.className = "i"; i.textContent = ICON[c.state]; l.className = "l"; l.textContent = c.label;
+    li.append(i, l);
+    if (c.detail) { const d = document.createElement("span"); d.className = "d"; d.textContent = c.detail; li.append(d); }
+    ul.append(li);
+  }
+  ul.hidden = !list.length;
+}
+
+async function choose(file) {
+  const my = ++epoch;
+  build = null; lock(writing);
+  if (!file) { $("fname").textContent = "Drop the .fwsc here, or choose it"; showChecks([]); return; }
+  $("fname").textContent = file.name;
+  showChecks([{ state: "info", label: "Checking…" }]);
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const off = await officialBytes;
+  if (my !== epoch) return;
+  const r = checkBuild(bytes, off.bytes);
+  showChecks(r.checks);
+  if (r.ok) build = { image: r.image, product: r.product, warnings: r.checks.filter((c) => c.state === "warn").map((c) => c.label) };
+  lock(writing);
+}
+$("file").addEventListener("change", () => choose($("file").files[0]));
+const drop = $("drop");
+drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); if (!writing) choose(e.dataTransfer.files[0]); });
+
+(() => {
+  if (!navigator.requestMIDIAccess) { say("nomidi"); return; }
+  $("check").disabled = false;
+})();
+
+$("check").addEventListener("click", async () => {
+  if (writing) return;
+  lock(true);
+  $("found").textContent = "Looking for the FM-1…";
+  const access = await midi();
+  if (access) {
+    const dev = await new Updater(access, log).find(null);
+    if (dev) dev.link.close();
+    $("found").textContent = dev ? describe(dev) : notFound(access);
+  } else $("found").textContent = "";
+  lock(false);
+});
+
+$("go").addEventListener("click", async () => {
+  if (writing || !build) return;
+  const warn = build.warnings.length ? `\n\nWarnings:\n• ${build.warnings.join("\n• ")}` : "";
+  if (!confirm("Install this custom Elixir build? Projects saved by Elixir or Kettle are kept; anything Felucca saved " +
+      "is replaced. It is untested on hardware: a crash at start needs the FM-1-transporter to undo." + warn)) return;
+  lock(true);
+  await run(build.image, build.product);
+  lock(false);
+});
+
+$("official-go").addEventListener("click", async () => {
+  if (writing || !official || !confirm("Reinstall the official Elixir release? Your projects are kept.")) return;
+  lock(true);
+  await run(official.image, official.product);
+  lock(false);
+});
+
+$("stock-file").addEventListener("change", async () => {
+  const my = ++stockEpoch, file = $("stock-file").files[0];
+  stock = null; lock(writing);
+  if (!file) return;
+  try {
+    if (file.size !== STOCK_V15_SIZE) throw new Error("select the unmodified FM-1.fwsc of V15");
+    const ok = await validateStockPackage(new Uint8Array(await file.arrayBuffer()));
+    if (my !== stockEpoch) return;
+    stock = ok; $("status").textContent = "Official V15 file verified."; lock(writing);
+  } catch (e) { if (my === stockEpoch) $("status").textContent = "Not the official V15 file: " + e.message; }
+});
+
+$("stock-go").addEventListener("click", async () => {
+  if (writing || !stock || !confirm("Install the official V15 firmware? Elixir's projects on the FM-1 will be lost.")) return;
+  lock(true);
+  await run(stock.image, stock.product);
+  lock(false);
+});
+</script>
+</body>
+</html>

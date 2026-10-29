@@ -1,0 +1,20 @@
+import { readFileSync } from "node:fs";
+const { checkBuild } = await import("./custom.js");
+const OFF = new Uint8Array(readFileSync("/tmp/elixir-site/firmware/elixir-v0.17.fwsc"));
+let fails = 0;
+const t = (name, file, official, expect) => {
+  const r = checkBuild(new Uint8Array(readFileSync(file)), official);
+  const states = r.checks.map((c) => c.state[0]).join("");
+  const ok = expect(r);
+  console.log(`${ok ? "ok  " : "FAIL"} ${name}: ok=${r.ok} rates=${r.usbRates} [${states}]`);
+  for (const c of r.checks) console.log(`       ${c.state.padEnd(4)} ${c.label} — ${c.detail}`);
+  if (!ok) fails++;
+};
+t("official build", "/tmp/elixir-site/firmware/elixir-v0.17.fwsc", OFF, (r) => r.ok && !r.usbRates.length && r.checks.some(c => c.state === "info"));
+t("USB audio build", "uac.fwsc", OFF, (r) => r.ok && r.usbRates.join() === "44100,48000" && !r.checks.some(c => c.state === "warn" || c.state === "info"));
+t("USB audio, offline", "uac.fwsc", null, (r) => r.ok && r.checks.some(c => c.state === "warn" && /not compared/.test(c.label)));
+t("corrupt", "corrupt.fwsc", OFF, (r) => !r.ok && !r.image);
+t("claims official", "fakeofficial.fwsc", OFF, (r) => !r.ok && /official V15/.test(r.checks.at(-1).detail));
+t("altered loader", "loader.fwsc", OFF, (r) => r.ok && r.checks.some(c => /differs/.test(c.label)));
+t("too short", "short.fwsc", OFF, (r) => !r.ok);
+console.log(fails ? `${fails} FAILED` : "all ok");

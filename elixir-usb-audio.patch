@@ -1,0 +1,63 @@
+diff --git a/firmware/src/audio.c b/firmware/src/audio.c
+index 4dcbcde..766e165 100644
+--- a/firmware/src/audio.c
++++ b/firmware/src/audio.c
+@@ -2,7 +2,9 @@
+  * Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments
+  * Elixir: Felucca's I2S output (ALNK0 -> the codec) and its audio ISR: per half buffer (HALF_FRAMES), the
+  * engine's blocks (engine.c, BLOCK each), then Q15 -> 24 bit. The load meter as Felucca's. */
++#ifndef HALF_FRAMES
+ #define HALF_FRAMES 128u          /* two of the engine's blocks: 2.9 ms at 44.1 kHz */
++#endif
+ #define HALF_WORDS (HALF_FRAMES * 2u)
+ #define CPU_AVG 32u
+ #define OUT_SHIFT 7               /* Q15 -> 24-bit, -6 dBFS ceiling (Felucca's) */
+@@ -75,9 +77,16 @@ void fm1_alnk0_irq(void)                       /* via isr_alnk0 (hal/fm1_isr.S)
+         ld_t = t0;
+         for (i = 0; i < NLD; i++)
+             ld_acc[i] = 0;
++#endif
++#if FELUCCA_UAC
++        uac_render_start();                    /* USB audio: prime or measure the ring before this half */
+ #endif
+         for (b = 0; b < HALF_FRAMES; b += BLOCK)
+             engine_block(o + 2u * b);
++#if FELUCCA_UAC
++        if (uac.feed)                          /* the same master mix to USB, still Q15 (usb.c uac_tap takes Q15) */
++            uac_tap(o, HALF_FRAMES);
++#endif
+         for (i = 0; i < HALF_WORDS; i++)
+             o[i] *= 1 << OUT_SHIFT;
+         LOAD_MARK(LD_MIX);
+diff --git a/firmware/src/elixir.c b/firmware/src/elixir.c
+index 1a91391..ab95aae 100644
+--- a/firmware/src/elixir.c
++++ b/firmware/src/elixir.c
+@@ -11,7 +11,10 @@
+ #define FELUCCA_OTA 1
+ #define FELUCCA_OTA_DRYRUN 0
+ #define FELUCCA_CDC 0
+-#define FELUCCA_UAC 0
++#ifndef FELUCCA_UAC
++#define FELUCCA_UAC 1                    /* USB audio out to the host (UAC1, 44.1 / 48 kHz): usb.c, audio.c, main.c */
++#endif
++#define HALF_FRAMES 128u                 /* audio.c's render size, here so usb.c's ring asserts see it */
+ #define FELUCCA_UART 1
+ #define FELUCCA_CPU2 1                   /* 17b: the second core, started at power-on (main.c cores_boot, audio.c) */
+ #define FM1_CPU1_USED 1
+diff --git a/firmware/src/main.c b/firmware/src/main.c
+index 59bc905..84430ab 100644
+--- a/firmware/src/main.c
++++ b/firmware/src/main.c
+@@ -29,6 +29,11 @@ void fm1_timer5_irq(void)
+     if (++sub == 10u)
+         sub = 0;
+     if (in_audio) {                             /* nested in the audio ISR: the scan only (main.c of Felucca) */
++#if FELUCCA_UAC
++        if (usb_due)                            /* USB audio can't wait out a render: one packet per 1 ms. Touches
++                                                 * EP4 only; usb_poll never runs nested (Felucca's timer5.c) */
++            uac_service();
++#endif
+         t5_nested_ticks += fm1_ticks() - t0;
+         return;
+     }
