@@ -76,8 +76,27 @@ jobs:
         working-directory: /tmp/elixir
         run: |
           export JIELI_TOOLCHAIN=~/.jieli/toolchain AC79_SDK=~/fw-AC79_AIoT_SDK
-          ./build.sh
+          if ! ./build.sh > /tmp/build.log 2>&1; then
+            cat /tmp/build.log
+            # the log's tail as an annotation too (readable through the checks API)
+            echo "::error title=build.sh failed::$(tail -c 3500 /tmp/build.log | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\r/%0D/g;s/\n/%0A/g')"
+            exit 1
+          fi
+          tail -5 /tmp/build.log
           ls -la build/elixir.fwsc
+
+      - name: On failure, build unpatched Elixir (is it the patch or the environment?)
+        if: failure()
+        working-directory: /tmp/elixir
+        run: |
+          git checkout -- . && git status --short | head
+          export JIELI_TOOLCHAIN=~/.jieli/toolchain AC79_SDK=~/fw-AC79_AIoT_SDK
+          rm -rf build
+          if ./build.sh > /tmp/base.log 2>&1; then
+            echo "::warning title=Unpatched Elixir builds::so the failure above comes from the patch"
+          else
+            echo "::error title=Unpatched Elixir fails too::$(tail -c 3500 /tmp/base.log | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\r/%0D/g;s/\n/%0A/g')"
+          fi
 
       - name: Check the package as the installer does
         run: |
