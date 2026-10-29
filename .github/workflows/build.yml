@@ -1,13 +1,16 @@
 # SPDX-License-Identifier: GPL-3.0-only
-# Builds Elixir with elixir-usb-audio.patch on a Linux x86-64 runner (the JieLi toolchain runs natively there),
-# checks the package with the installer's own checks, and publishes it as firmware/elixir-usb-audio.fwsc on main,
-# where the installer's "Use the latest build" button fetches it from GitHub Pages.
+# Builds Elixir with USB audio on a Linux x86-64 runner (the JieLi toolchain runs natively there), in two variants:
+#   stereo  elixir-usb-audio.patch                                -> firmware/elixir-usb-audio.fwsc
+#   8ch     the same, then elixir-usb-audio-8ch.patch on top      -> firmware/elixir-usb-audio-8ch.fwsc
+# checks each with the installer's own checks and publishes them with firmware/build.json on main, where the
+# installer's buttons fetch them from GitHub Pages.
 name: Build firmware
 
 on:
   push:
     branches: [main]
-    paths: [elixir-usb-audio.patch, .github/workflows/build.yml, tools/custom.js, tools/verify_build.mjs]
+    paths: [elixir-usb-audio.patch, elixir-usb-audio-8ch.patch, .github/workflows/build.yml, tools/custom.js,
+            tools/verify_build.mjs, tools/usb8_driver_test.c, tools/usb8_engine_test.c]
   workflow_dispatch:
     inputs:
       elixir_ref:
@@ -72,20 +75,58 @@ jobs:
           fi
           ls -la ~/fw-AC79_AIoT_SDK/cpu/wl82/tools/uboot.boot
 
-      - name: Build
+      - name: Build (stereo)
         working-directory: /tmp/elixir
         run: |
           export JIELI_TOOLCHAIN=~/.jieli/toolchain AC79_SDK=~/fw-AC79_AIoT_SDK
           if ! ./build.sh > /tmp/build.log 2>&1; then
             cat /tmp/build.log
             # the log's tail as an annotation too (readable through the checks API)
-            echo "::error title=build.sh failed::$(tail -c 3500 /tmp/build.log | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=build.sh failed (stereo)::$(tail -c 3500 /tmp/build.log | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\r/%0D/g;s/\n/%0A/g')"
             exit 1
           fi
           tail -5 /tmp/build.log
-          ls -la build/elixir.fwsc
+          mkdir -p /tmp/out && cp build/elixir.fwsc /tmp/out/elixir-usb-audio.fwsc
 
-      - name: On failure, build unpatched Elixir (is it the patch or the environment?)
+      - name: Official package (the loader comparison)
+        run: |
+          META="$(curl -fsSL https://dmajka.github.io/elixir/install/ | grep -o '"pkg": *"\.\./firmware/[^"]*\.fwsc"' | head -1 | sed 's/.*firmware\///; s/"$//')"
+          curl -fsSL -o /tmp/official.fwsc "https://dmajka.github.io/elixir/firmware/${META:-elixir-v0.17.fwsc}" || rm -f /tmp/official.fwsc
+
+      - name: Check the stereo package as the installer does
+        run: node tools/verify_build.mjs /tmp/out/elixir-usb-audio.fwsc $( [ -f /tmp/official.fwsc ] && echo /tmp/official.fwsc ) --channels 2
+
+      - name: Apply the 8-channel patch
+        run: |
+          git -C /tmp/elixir apply --check "$GITHUB_WORKSPACE/elixir-usb-audio-8ch.patch"
+          git -C /tmp/elixir apply "$GITHUB_WORKSPACE/elixir-usb-audio-8ch.patch"
+          grep -n "define UAC_CH 8u" /tmp/elixir/firmware/src/elixir.c
+
+      - name: 8-channel host tests (the driver's stream, the engine's routing)
+        run: |
+          E=/tmp/elixir
+          cc -O2 -std=gnu99 -w -I $E/firmware/src -I $E/firmware/hal tools/usb8_driver_test.c -o /tmp/usb8_driver_test
+          /tmp/usb8_driver_test
+          cc -O2 -std=gnu99 -w -I $E/build/gen -I $E/firmware/src -I $E/firmware/hal -I $E/tests tools/usb8_engine_test.c -lm -o /tmp/usb8_engine_test
+          /tmp/usb8_engine_test
+
+      - name: Build (8 channels)
+        working-directory: /tmp/elixir
+        run: |
+          export JIELI_TOOLCHAIN=~/.jieli/toolchain AC79_SDK=~/fw-AC79_AIoT_SDK
+          if ! ./build.sh > /tmp/build8.log 2>&1; then
+            cat /tmp/build8.log
+            echo "::error title=build.sh failed (8 channels)::$(tail -c 3500 /tmp/build8.log | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\r/%0D/g;s/\n/%0A/g')"
+            exit 1
+          fi
+          tail -5 /tmp/build8.log
+          echo "::notice title=8-channel build checks::$(grep -E '^\s+(ok|FAIL)' /tmp/build8.log | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')"
+          cp build/elixir.fwsc /tmp/out/elixir-usb-audio-8ch.fwsc
+
+      - name: Check the 8-channel package as the installer does
+        run: node tools/verify_build.mjs /tmp/out/elixir-usb-audio-8ch.fwsc $( [ -f /tmp/official.fwsc ] && echo /tmp/official.fwsc ) --channels 8
+
+      - name: On failure, build unpatched Elixir (is it the patches or the environment?)
         if: failure()
         working-directory: /tmp/elixir
         run: |
@@ -93,36 +134,43 @@ jobs:
           export JIELI_TOOLCHAIN=~/.jieli/toolchain AC79_SDK=~/fw-AC79_AIoT_SDK
           rm -rf build
           if ./build.sh > /tmp/base.log 2>&1; then
-            echo "::warning title=Unpatched Elixir builds::so the failure above comes from the patch"
+            echo "::warning title=Unpatched Elixir builds::so the failure above comes from a patch"
           else
             echo "::error title=Unpatched Elixir fails too::$(tail -c 3500 /tmp/base.log | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\r/%0D/g;s/\n/%0A/g')"
           fi
 
-      - name: Check the package as the installer does
-        run: |
-          META="$(curl -fsSL https://dmajka.github.io/elixir/install/ | grep -o '"pkg": *"\.\./firmware/[^"]*\.fwsc"' | head -1 | sed 's/.*firmware\///; s/"$//')"
-          curl -fsSL -o /tmp/official.fwsc "https://dmajka.github.io/elixir/firmware/${META:-elixir-v0.17.fwsc}" || rm -f /tmp/official.fwsc
-          node tools/verify_build.mjs /tmp/elixir/build/elixir.fwsc $( [ -f /tmp/official.fwsc ] && echo /tmp/official.fwsc )
-
-      - name: Upload the build
+      - name: Upload the builds
         uses: actions/upload-artifact@v4
         with:
           name: elixir-usb-audio-${{ env.ELIXIR_SHA }}
-          path: /tmp/elixir/build/elixir.fwsc
+          path: /tmp/out/*.fwsc
 
       - name: Publish to the site
         run: |
           mkdir -p firmware
-          cp /tmp/elixir/build/elixir.fwsc firmware/elixir-usb-audio.fwsc
-          SHA256="$(sha256sum firmware/elixir-usb-audio.fwsc | cut -d' ' -f1)"
+          cp /tmp/out/*.fwsc firmware/
           VER="$(grep -o 'ELIXIR_VERSION "[^"]*"' /tmp/elixir/firmware/src/elixir.c | head -1 | cut -d'"' -f2)"
-          printf '{"elixir_version":"%s","elixir_commit":"%s","patch_commit":"%s","built":"%s","sha256":"%s","run":"%s"}\n' \
-            "$VER" "$ELIXIR_SHA" "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%MZ)" "$SHA256" \
-            "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > firmware/build.json
+          python3 - "$VER" <<'PY'
+          import hashlib, json, os, sys, time
+          sha = lambda f: hashlib.sha256(open("firmware/" + f, "rb").read()).hexdigest()
+          builds = [
+            {"id": "stereo", "name": "Stereo", "file": "elixir-usb-audio.fwsc", "channels": 2,
+             "rates": [44100, 48000], "sha256": sha("elixir-usb-audio.fwsc")},
+            {"id": "8ch", "name": "8 channels", "file": "elixir-usb-audio-8ch.fwsc", "channels": 8,
+             "rates": [44100], "sha256": sha("elixir-usb-audio-8ch.fwsc")},
+          ]
+          info = {"elixir_version": sys.argv[1], "elixir_commit": os.environ["ELIXIR_SHA"],
+                  "patch_commit": os.environ["GITHUB_SHA"], "built": time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime()),
+                  "sha256": builds[0]["sha256"],     # (the stereo build: what pages before the 8-channel one read)
+                  "run": f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}',
+                  "builds": builds}
+          open("firmware/build.json", "w").write(json.dumps(info) + "\n")
+          PY
           cat firmware/build.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add firmware
           git diff --cached --quiet && { echo "unchanged"; exit 0; }
-          git commit -m "Build Elixir ${VER} with USB audio (elixir ${ELIXIR_SHA::7})"
+          git commit -m "Build Elixir ${VER} with USB audio, stereo and 8 channels (elixir ${ELIXIR_SHA::7})"
+          git pull --rebase -q origin main
           git push

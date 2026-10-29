@@ -11,17 +11,21 @@ import { createHash } from "node:crypto";
 const PAGE = new URL("../index.html", import.meta.url).pathname;
 const DIR = (process.env.FIX || ".").replace(/\/?$/, "/");
 const OFFICIAL = readFileSync("/tmp/elixir-site/firmware/elixir-v0.17.fwsc");
-const BUILD = readFileSync(DIR + "uac.fwsc");
-const sha = createHash("sha256").update(BUILD).digest("hex");
+const BUILD = readFileSync(DIR + "uac.fwsc"), BUILD8 = readFileSync(DIR + "uac8.fwsc");
+const sha = (b) => createHash("sha256").update(b).digest("hex");
 let published = "none";                              // none | ok | badsha
 const server = createServer((req, res) => {
   if (req.url.startsWith("/firmware/build.json")) {
     if (published === "none") { res.statusCode = 404; res.end(); return; }
     res.setHeader("Content-Type", "application/json");
+    const bad = published === "badsha";
     res.end(JSON.stringify({ elixir_version: "v0.17", elixir_commit: "1a247769bd37", built: "2026-10-29T16:30Z",
-      sha256: published === "ok" ? sha : "0".repeat(64) }));
+      sha256: sha(BUILD), builds: [
+        { id: "stereo", name: "Stereo", file: "elixir-usb-audio.fwsc", channels: 2, sha256: sha(BUILD) },
+        { id: "8ch", name: "8 channels", file: "elixir-usb-audio-8ch.fwsc", channels: 8, sha256: bad ? "0".repeat(64) : sha(BUILD8) }] }));
     return;
   }
+  if (req.url.startsWith("/firmware/elixir-usb-audio-8ch.fwsc")) { res.end(BUILD8); return; }
   if (req.url.startsWith("/firmware/elixir-usb-audio.fwsc")) { res.end(BUILD); return; }
   res.setHeader("Content-Type", "text/html");
   res.end(readFileSync(PAGE));
@@ -85,27 +89,32 @@ await page.waitForFunction(() => document.getElementById("official-note").textCo
 check(!(await page.isDisabled("#official-go")), "official package fetched; Reinstall official Elixir enabled");
 check(await page.isDisabled("#go"), "Install disabled before a build is chosen");
 await page.waitForFunction(() => !/Looking/.test(document.getElementById("latest-note").textContent));
-check(await page.isDisabled("#latest") && /No build published yet/.test(await page.textContent("#latest-note")),
-  "nothing published: latest-build button disabled, says so");
+check((await page.$$("button.build")).length === 0 && /No build published yet/.test(await page.textContent("#latest-note")),
+  "nothing published: no build cards, says so");
 
-const latest = async () => {
-  await page.waitForFunction(() => !document.getElementById("latest").disabled);
-  await page.click("#latest");
+const latest = async (id = "stereo") => {
+  await page.waitForFunction((id) => { const b = document.querySelector(`button.build[data-id="${id}"]`); return b && !b.disabled; }, id);
+  await page.click(`button.build[data-id="${id}"]`);
   await page.waitForFunction(() => !/Checking/.test(document.getElementById("checks").textContent));
   return page.$$eval("#checks li", (ls) => ls.map((l) => l.className + ":" + l.querySelector(".l").textContent));
 };
 published = "badsha";
 await page.reload();
-let c = await latest();
+let c = await latest("8ch");
 check(c.length === 1 && /^fail:Couldn't read the build/.test(c[0]) && await page.isDisabled("#go"),
-  "published build with a wrong checksum: refused, Install disabled");
+  "a published build with a wrong checksum: refused, Install disabled");
 published = "ok";
 await page.reload();
 await page.waitForFunction(() => document.getElementById("official-note").textContent.endsWith(".fwsc"));
 check(/Elixir v0\.17 \(1a24776\), built/.test(await page.textContent("#latest-note")), "latest build described: " + await page.textContent("#latest-note"));
-c = await latest();
-check(c.length === 5 && c.every((x) => x.startsWith("ok")), "latest build: 5 checks ok");
+check((await page.$$("button.build")).length === 2, "two build cards: stereo and 8 channels");
+c = await latest("stereo");
+check(c.length === 5 && c.every((x) => x.startsWith("ok")) && c.some((x) => /^ok:USB audio is built in$/.test(x)), "stereo build: 5 checks ok");
+c = await latest("8ch");
+check(c.length === 5 && c.every((x) => x.startsWith("ok")) && c.some((x) => /^ok:USB audio is built in: 8 channels/.test(x)),
+  "8-channel build: 5 checks ok, 8 channels reported");
 check(!(await page.isDisabled("#go")), "Install enabled for the latest build");
+check(await page.$eval('button.build[data-id="8ch"]', (b) => b.classList.contains("picked")), "the picked card is marked");
 
 await page.click("#check");
 await page.waitForFunction(() => /FM-1_900/.test(document.getElementById("found").textContent));
@@ -122,10 +131,10 @@ c = await choose("fakeofficial.fwsc");
 check(c.at(-1).startsWith("fail") && await page.isDisabled("#go"), "official-identity file refused, Install disabled");
 c = await choose("official.fwsc");
 check(c.some((x) => /^warn:No USB audio/.test(x)) && c.some((x) => /^info:This is the official/.test(x)), "official build: warns no USB audio, says it's the official one");
-c = await latest();
-check(c.length === 5 && c.every((x) => x.startsWith("ok")), "back to the latest build: 5 checks ok: " + c.map((x) => x.split(":")[1]).join(" | "));
+c = await latest("8ch");
+check(c.length === 5 && c.every((x) => x.startsWith("ok")), "back to the 8-channel build: 5 checks ok: " + c.map((x) => x.split(":")[1]).join(" | "));
 
-const want = (await import("/tmp/elixir/web/fm1pkg.js")).logicalImage(new Uint8Array(BUILD));
+const want = (await import("/tmp/elixir/web/fm1pkg.js")).logicalImage(new Uint8Array(BUILD8));
 await page.evaluate((n) => { window.__sim.imageLen = n; }, want.length);   // (the real loader reads the length from the package)
 const t0 = Date.now();
 await page.click("#go");

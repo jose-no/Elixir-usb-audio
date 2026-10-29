@@ -31,13 +31,50 @@ descriptors, packet pacing, underruns and overruns, the 44.1 / 48 kHz switch and
 
 USB audio carries the mix after the MASTER pot, so turn the FM-1 up while recording.
 
+## 8 channels
+
+[`elixir-usb-audio-8ch.patch`](elixir-usb-audio-8ch.patch), applied on top of the stereo patch, makes the FM-1 an
+8-input USB audio device at 44.1 kHz:
+
+| USB inputs | Signal |
+|---|---|
+| 1–2 | **MIX** (default): the full mix, as the stereo build sends it. **FX**: the FX bus and reverb returns only, through the master chain (compressor and sidechain, DIRT, DJ filter, STUTTER, COMB, CRUSH, REVERSE, tape stop's fade, MASTER) |
+| 3–8 | D1, D2, D3, SN, CY, hats: each voice after its own chain (filter, drive, shape, volume, cross mod, choke, PUMP), before pan, the sends and the master |
+
+CONFIG → USB AUDIO (the page before BUTTONS) switches 1–2 between MIX and FX; it is saved with the settings. FX mode
+acts only while a host records: then the master chain runs on the FX returns alone, and the FM-1's own output is the
+processed FX plus the dry voices. With no host it plays the full mix as usual.
+
+What it changes:
+
+- `usb.c`: a channel count (`UAC_CH`): the ring, packets, descriptors (input terminal and format at 8 channels,
+  EP4 at 736 B, within full speed's 1023) and `uac_tap_frames()` for N interleaved channels; `bcdDevice` +0x40 so a
+  host that cached the stereo device learns this one afresh. The 48 kHz resampler is stereo, so 8 channels are
+  44.1 kHz only (iOS and macOS convert).
+- `voices.c`: each voice tapped as it enters the mixer; in FX mode the dry mix set aside before the FX bus and reverb
+  add their returns.
+- `engine.c`: the USB frames each block; the dry mix back in for the FM-1's output after the master chain.
+- `ui.c`, `ui_draw.c`, `project.c`: the USB AUDIO page and the setting (in the settings' padding: no format change).
+
+The 8 KB ring and the taps live in `.pool`. Tests: `tools/usb8_driver_test.c` (descriptors; a 10 s stream at the
+I2S rate with every frame in order and all 8 channels in place; underruns and overruns) and
+`tools/usb8_engine_test.c` (the real engine: USB 1–2 equal the output in MIX; the voices before pan; in FX mode the
+output equals MIX mode's with the master neutral, USB 1–2 silent with no sends and carrying the delay and reverb
+returns with them, MASTER scaling them but not the voices; no host, no change). Elixir's own `ui_test` passes with
+the 8-channel path compiled in.
+
+> **Unknown until it runs:** whether the FM-1's USB hardware sends 736-byte isochronous packets (the stereo build sends
+> 184). If 8 channels don't appear or stutter, the stereo build is one click away on the installer.
+
 ## Build
 
-You don't have to: GitHub Actions ([`.github/workflows/build.yml`](.github/workflows/build.yml)) builds it on every
-change to the patch, on a Linux x86-64 runner where JieLi's toolchain runs natively. It clones Elixir at the commit
-the patch was tested on, applies the patch, runs Felucca's USB audio host test against the patched `usb.c`, builds,
-checks the package with the installer's own checks (refusing it without USB audio), and publishes it as
-[`firmware/elixir-usb-audio.fwsc`](firmware/) with `firmware/build.json` (Elixir version and commit, SHA-256, the run).
+You don't have to: GitHub Actions ([`.github/workflows/build.yml`](.github/workflows/build.yml)) builds both on every
+change to the patches, on a Linux x86-64 runner where JieLi's toolchain runs natively. It clones Elixir at the commit
+the patches were tested on, applies the stereo patch, runs Felucca's USB audio host test against the patched `usb.c`,
+builds and checks the stereo package; then applies the 8-channel patch, runs its two host tests, builds and checks
+that package (with the installer's own checks, requiring 2 and 8 channels). It publishes
+[`firmware/elixir-usb-audio.fwsc`](firmware/) and `firmware/elixir-usb-audio-8ch.fwsc` with `firmware/build.json`
+(Elixir version and commit, each build's SHA-256, the run).
 Run it by hand under Actions → Build firmware → Run workflow, optionally with another Elixir commit, tag or branch.
 
 To build locally instead:
@@ -45,6 +82,7 @@ To build locally instead:
 ```sh
 git clone https://github.com/dmajka/elixir && cd elixir
 git apply /path/to/elixir-usb-audio.patch
+git apply /path/to/elixir-usb-audio-8ch.patch       # (for 8 channels)
 ./build.sh                      # -> build/elixir.fwsc
 ```
 
@@ -53,12 +91,13 @@ git apply /path/to/elixir-usb-audio.patch
 
 ## Install
 
-Open the [installer](https://jose-no.github.io/elixir-usb-audio/) and press **Use the latest build** (or choose your
-own `build/elixir.fwsc` under "Or use a build of your own"), then **Install this build**. It uses Elixir's updater
+Open the [installer](https://jose-no.github.io/elixir-usb-audio/), pick **Stereo** or **8 channels** (or choose your
+own `build/elixir.fwsc` under "Or use a build of your own"), then **Install this build**. You can switch between
+them any time. It uses Elixir's updater
 (`web/fm1ota.js`) and package reader (`web/fm1pkg.js`) unchanged; nothing is uploaded, and the latest build is checked
-against the SHA-256 the workflow published. Before it will install, the page checks that the package is intact (every
+against the SHA-256 the workflow published for it. Before it will install, the page checks that the package is intact (every
 CRC), reports an alternative-firmware identity (FM-1_9xx) and has Elixir's flash layout. It also reports whether USB
-audio is built in and whether the update loader matches the official Elixir release. Updating Elixir keeps your
+audio is built in, with how many channels, and whether the update loader matches the official Elixir release. Updating Elixir keeps your
 projects. The page can also reinstall the official Elixir release or return the FM-1 to M-VAVE's V15.
 
 `tools/fm1_install.py build/elixir.fwsc` from Elixir's repo works too.
@@ -68,9 +107,10 @@ projects. The page can also reinstall the official Elixir release or return the 
 - `index.html`: the installer, built by `tools/build_page.py` from `tools/page.html`, Elixir's `web/fm1pkg.js` and
   `web/fm1ota.js`, and `tools/custom.js` (the build checks).
 - `tools/verify_build.mjs`, `tools/uac_host_test.sh`: the workflow's checks of a build and of the patched `usb.c`.
+- `tools/usb8_driver_test.c`, `tools/usb8_engine_test.c`: the 8-channel driver and the engine's routing (see above).
 - `tools/test_check.mjs`, `tools/fixtures.mjs`: the build checks against the official package and altered copies.
-  `tools/e2e.mjs`: the page in headless Chrome (Playwright) against a simulated FM-1: the latest-build button
-  (none published, published, a bad checksum), chosen files, and a full install. They expect an Elixir checkout at
+  `tools/e2e.mjs`: the page in headless Chrome (Playwright) against a simulated FM-1: the build cards (none
+  published, both published, a bad checksum), chosen files, and a full install of the 8-channel build. They expect an Elixir checkout at
   `/tmp/elixir` and its published package at `/tmp/elixir-site/firmware/`.
 
 ## Licence

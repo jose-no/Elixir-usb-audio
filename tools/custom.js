@@ -10,8 +10,8 @@ import { Package, productOf, logicalImage } from "/tmp/elixir/web/fm1pkg.js"; //
 export const ELIXIR_LAYOUT = { flashFileOff: 1044, flashSize: 602112, appBase: 16384, appOff: 16672,
   appSize: 0x8DFBC, chipKey: 0x980F };
 
-// UAC1 type I format descriptor, from usb.c D_FMT: CS_INTERFACE, FORMAT_TYPE, TYPE_I, 2 ch, 2-byte, 16 bit, n rates
-const FMT_HEAD = [0x24, 0x02, 0x01, 0x02, 0x02, 0x10];
+// UAC1 type I format descriptor, from usb.c D_FMT: CS_INTERFACE, FORMAT_TYPE, TYPE_I, channels, 2-byte, 16 bit, rates
+const FMT_HEAD = [0x24, 0x02, 0x01];
 
 function indexOf(hay, pat, from = 0) {
   outer: for (let i = from; i + pat.length <= hay.length; i++) {
@@ -21,20 +21,22 @@ function indexOf(hay, pat, from = 0) {
   return -1;
 }
 
-// the sample rates the app offers over USB audio, [] when it has none
-export function usbAudioRates(app) {
+// the USB audio format the app offers: { channels, rates }, or null when it has none
+export function usbAudioFormat(app) {
   for (let i = indexOf(app, FMT_HEAD); i >= 1; i = indexOf(app, FMT_HEAD, i + 1)) {
-    const n = app[i + 6], len = app[i - 1];
+    const ch = app[i + 3], sub = app[i + 4], bits = app[i + 5], n = app[i + 6], len = app[i - 1];
+    if (ch < 1 || ch > 8 || sub !== 2 || bits !== 16) continue;
     if (n < 1 || n > 4 || len !== 8 + 3 * n) continue;           // bLength must match the rate count
     const rates = [];
     for (let k = 0; k < n; k++) {
       const o = i + 7 + 3 * k;
       rates.push(app[o] | (app[o + 1] << 8) | (app[o + 2] << 16));
     }
-    if (rates.every((r) => r >= 8000 && r <= 192000)) return rates;
+    if (rates.every((r) => r >= 8000 && r <= 192000)) return { channels: ch, rates };
   }
-  return [];
+  return null;
 }
+export const usbAudioRates = (app) => (usbAudioFormat(app) || { rates: [] }).rates;
 
 function loaderBytes(pkg) {
   const e = pkg.entries.find((x) => x.type === 100 && x.name === "ota.bin");
@@ -44,10 +46,10 @@ function loaderBytes(pkg) {
 const same = (a, b) => a && b && a.length === b.length && a.every((x, i) => x === b[i]);
 
 // bytes: the chosen file. official: the official Elixir package's bytes, or null when it couldn't be fetched.
-// -> { ok, product, image, usbRates, checks: [{ state: "ok" | "warn" | "fail" | "info", label, detail }] }
+// -> { ok, product, image, usbRates, usbChannels, checks: [{ state: "ok" | "warn" | "fail" | "info", label, detail }] }
 export function checkBuild(bytes, official) {
   const checks = [], add = (state, label, detail = "") => checks.push({ state, label, detail });
-  const result = { ok: false, product: null, image: null, usbRates: [], checks };
+  const result = { ok: false, product: null, image: null, usbRates: [], usbChannels: 0, checks };
   let pkg;
   try {
     pkg = new Package(bytes);
@@ -77,10 +79,15 @@ export function checkBuild(bytes, official) {
   add("ok", "Elixir's flash layout", "same offsets, app slot and chip key as the official release");
 
   const app = pkg.dec.subarray(pkg.appOff, pkg.appOff + pkg.app.size);
-  result.usbRates = usbAudioRates(app);
-  if (result.usbRates.length)
-    add("ok", "USB audio is built in", result.usbRates.map((r) => `${(r / 1000).toFixed(r % 1000 ? 1 : 0)} kHz`).join(" and ") +
-      ", 16-bit stereo: the FM-1 will show up as an audio input");
+  const fmt = usbAudioFormat(app);
+  result.usbRates = fmt ? fmt.rates : [];
+  result.usbChannels = fmt ? fmt.channels : 0;
+  const rates = result.usbRates.map((r) => `${(r / 1000).toFixed(r % 1000 ? 1 : 0)} kHz`).join(" and ");
+  if (fmt && fmt.channels === 2)
+    add("ok", "USB audio is built in", `${rates}, 16-bit stereo: the FM-1 will show up as an audio input`);
+  else if (fmt)
+    add("ok", `USB audio is built in: ${fmt.channels} channels`, `${rates}, 16-bit: inputs 1-2 the mix or the FX ` +
+      "returns (CONFIG USB AUDIO), " + (fmt.channels === 8 ? "3-8 D1 D2 D3 SN CY HH" : `3-${fmt.channels} the voices`));
   else
     add("warn", "No USB audio in this build", "it has no USB audio descriptor: was it built with the patch applied?");
 

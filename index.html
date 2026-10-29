@@ -66,7 +66,15 @@ ul.checks .d { grid-column: 2; color: var(--dim); font-size: 14px; margin-top: -
 #progress { margin-top: 24px; }
 progress { width: 100%; height: 8px; display: block; accent-color: var(--accent-fill); }
 #status { margin-top: 10px; min-height: 1.6em; }
-details.own { margin: 14px 0 0; } details.own summary { cursor: pointer; margin-bottom: 10px; }
+details.own { margin: 14px 0 0; }
+.builds { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin: 0 0 8px; }
+.builds:empty { display: none; }
+button.build { display: flex; flex-direction: column; justify-content: flex-start; align-items: flex-start; width: 100%; text-align: left; padding: 14px 16px; border-radius: var(--radius);
+               background: var(--card); color: var(--fg); border: 1.5px solid var(--line); font-weight: 400; }
+button.build:hover:not(:disabled) { border-color: var(--accent-fill); filter: none; }
+button.build.picked { border-color: var(--accent-fill); box-shadow: inset 0 0 0 1px var(--accent-fill); }
+button.build .t { display: block; font-weight: 650; font-size: 16px; margin-bottom: 4px; }
+button.build .d { display: block; color: var(--dim); font-size: 14px; line-height: 1.45; } details.own summary { cursor: pointer; margin-bottom: 10px; }
 details.log summary { cursor: pointer; color: var(--dim); font-size: 14px; }
 pre { color: var(--dim); font-size: 12px; white-space: pre-wrap; margin-top: 16px; }
 ol, ul.plain { padding-left: 20px; margin: 0 0 14px; } ol li, ul.plain li { margin-bottom: 6px; }
@@ -92,11 +100,11 @@ footer a { color: inherit; }
   <p id="found"></p>
 
   <h2><span class="n">2</span>Choose the build</h2>
-  <p>This repo builds Elixir with the <a href="elixir-usb-audio.patch">USB audio patch</a> on GitHub, so there's
-    nothing to build yourself: use the latest build. It goes onto an FM-1 already running Elixir, Kettle or the
-    official V15; updating Elixir keeps your projects, kit library and settings.</p>
-  <p class="row"><button class="alt" id="latest" disabled>Use the latest build</button>
-    <span class="small" id="latest-note">Looking for it…</span></p>
+  <p>This repo builds Elixir with the USB audio patches on GitHub, so there's nothing to build yourself: pick one of
+    the latest builds. Either goes onto an FM-1 already running Elixir, Kettle or the official V15, and you can switch
+    between them any time; updating Elixir keeps your projects, kit library and settings.</p>
+  <div class="builds" id="builds"></div>
+  <p class="small" id="latest-note">Looking for the latest builds…</p>
   <details class="own"><summary class="small">Or use a build of your own</summary>
   <p class="small">Your own <code>build/elixir.fwsc</code>, from an Elixir checkout after <code>git apply</code> of the
     patch and <code>./build.sh</code> (the JieLi toolchain and SDK; see the
@@ -119,8 +127,13 @@ footer a { color: inherit; }
   <ol>
     <li>Connect the FM-1 to the iPhone or iPad (USB-C, or Apple's Lightning to USB 3 camera adapter with power).</li>
     <li>In an app that records from an audio interface (AUM, GarageBand, Loopy, Koala…), pick the FM-1 as the input.
-      It sends the master mix, 16-bit stereo, at 44.1 or 48 kHz (the app picks).</li>
-    <li>The MASTER pot sets the USB level too, so keep it up while recording.</li>
+      The stereo build sends the master mix at 44.1 or 48 kHz (the app picks). The 8-channel build shows up as eight
+      inputs at 44.1 kHz: 1–2 the mix, 3–8 D1, D2, D3, SN, CY and the hats, each before its pan and sends.</li>
+    <li>8 channels: on the FM-1, CONFIG → USB AUDIO switches inputs 1–2 from MIX to FX, the FX bus and reverb
+      returns with the master chain (compressor, DIRT, DJ filter, STUTTER and the rest) and no dry sound. Record 3–8
+      and 1–2 together for every voice dry plus the effects. FX mode only applies while an app records; the FM-1's own
+      output stays the full mix.</li>
+    <li>The MASTER pot sets the level of inputs 1–2, so keep it up while recording. Inputs 3–8 don't follow it.</li>
     <li>On the FM-1, open CONFIG → LOAD while a busy pattern plays and the app records, and note the CPU and PEAK
       figures: that's the one cost of USB audio nobody has measured yet.</li>
   </ol>
@@ -651,8 +664,8 @@ export class Updater {
 export const ELIXIR_LAYOUT = { flashFileOff: 1044, flashSize: 602112, appBase: 16384, appOff: 16672,
   appSize: 0x8DFBC, chipKey: 0x980F };
 
-// UAC1 type I format descriptor, from usb.c D_FMT: CS_INTERFACE, FORMAT_TYPE, TYPE_I, 2 ch, 2-byte, 16 bit, n rates
-const FMT_HEAD = [0x24, 0x02, 0x01, 0x02, 0x02, 0x10];
+// UAC1 type I format descriptor, from usb.c D_FMT: CS_INTERFACE, FORMAT_TYPE, TYPE_I, channels, 2-byte, 16 bit, rates
+const FMT_HEAD = [0x24, 0x02, 0x01];
 
 function indexOf(hay, pat, from = 0) {
   outer: for (let i = from; i + pat.length <= hay.length; i++) {
@@ -662,20 +675,22 @@ function indexOf(hay, pat, from = 0) {
   return -1;
 }
 
-// the sample rates the app offers over USB audio, [] when it has none
-export function usbAudioRates(app) {
+// the USB audio format the app offers: { channels, rates }, or null when it has none
+export function usbAudioFormat(app) {
   for (let i = indexOf(app, FMT_HEAD); i >= 1; i = indexOf(app, FMT_HEAD, i + 1)) {
-    const n = app[i + 6], len = app[i - 1];
+    const ch = app[i + 3], sub = app[i + 4], bits = app[i + 5], n = app[i + 6], len = app[i - 1];
+    if (ch < 1 || ch > 8 || sub !== 2 || bits !== 16) continue;
     if (n < 1 || n > 4 || len !== 8 + 3 * n) continue;           // bLength must match the rate count
     const rates = [];
     for (let k = 0; k < n; k++) {
       const o = i + 7 + 3 * k;
       rates.push(app[o] | (app[o + 1] << 8) | (app[o + 2] << 16));
     }
-    if (rates.every((r) => r >= 8000 && r <= 192000)) return rates;
+    if (rates.every((r) => r >= 8000 && r <= 192000)) return { channels: ch, rates };
   }
-  return [];
+  return null;
 }
+export const usbAudioRates = (app) => (usbAudioFormat(app) || { rates: [] }).rates;
 
 function loaderBytes(pkg) {
   const e = pkg.entries.find((x) => x.type === 100 && x.name === "ota.bin");
@@ -685,10 +700,10 @@ function loaderBytes(pkg) {
 const same = (a, b) => a && b && a.length === b.length && a.every((x, i) => x === b[i]);
 
 // bytes: the chosen file. official: the official Elixir package's bytes, or null when it couldn't be fetched.
-// -> { ok, product, image, usbRates, checks: [{ state: "ok" | "warn" | "fail" | "info", label, detail }] }
+// -> { ok, product, image, usbRates, usbChannels, checks: [{ state: "ok" | "warn" | "fail" | "info", label, detail }] }
 export function checkBuild(bytes, official) {
   const checks = [], add = (state, label, detail = "") => checks.push({ state, label, detail });
-  const result = { ok: false, product: null, image: null, usbRates: [], checks };
+  const result = { ok: false, product: null, image: null, usbRates: [], usbChannels: 0, checks };
   let pkg;
   try {
     pkg = new Package(bytes);
@@ -718,10 +733,15 @@ export function checkBuild(bytes, official) {
   add("ok", "Elixir's flash layout", "same offsets, app slot and chip key as the official release");
 
   const app = pkg.dec.subarray(pkg.appOff, pkg.appOff + pkg.app.size);
-  result.usbRates = usbAudioRates(app);
-  if (result.usbRates.length)
-    add("ok", "USB audio is built in", result.usbRates.map((r) => `${(r / 1000).toFixed(r % 1000 ? 1 : 0)} kHz`).join(" and ") +
-      ", 16-bit stereo: the FM-1 will show up as an audio input");
+  const fmt = usbAudioFormat(app);
+  result.usbRates = fmt ? fmt.rates : [];
+  result.usbChannels = fmt ? fmt.channels : 0;
+  const rates = result.usbRates.map((r) => `${(r / 1000).toFixed(r % 1000 ? 1 : 0)} kHz`).join(" and ");
+  if (fmt && fmt.channels === 2)
+    add("ok", "USB audio is built in", `${rates}, 16-bit stereo: the FM-1 will show up as an audio input`);
+  else if (fmt)
+    add("ok", `USB audio is built in: ${fmt.channels} channels`, `${rates}, 16-bit: inputs 1-2 the mix or the FX ` +
+      "returns (CONFIG USB AUDIO), " + (fmt.channels === 8 ? "3-8 D1 D2 D3 SN CY HH" : `3-${fmt.channels} the voices`));
   else
     add("warn", "No USB audio in this build", "it has no USB audio descriptor: was it built with the patch applied?");
 
@@ -776,7 +796,7 @@ const lock = (on) => {
   $("official-go").disabled = on || !official;
   $("stock-go").disabled = on || !stock;
   $("file").disabled = $("stock-file").disabled = on;
-  $("latest").disabled = on || !latestInfo;
+  for (const b of document.querySelectorAll("button.build")) b.disabled = on || !latestInfo;
   $("check").disabled = on || !navigator.requestMIDIAccess;
 };
 window.addEventListener("beforeunload", (e) => { if (writing) { e.preventDefault(); e.returnValue = MSG.leave; } });
@@ -897,31 +917,46 @@ async function useBytes(name, bytesP) {
   lock(writing);
 }
 async function choose(file) {
+  for (const x of document.querySelectorAll("button.build")) x.classList.remove("picked");
   if (!file) { ++epoch; build = null; lock(writing); $("fname").textContent = "Drop the .fwsc here, or choose it"; showChecks([]); return; }
   return useBytes(file.name, file.arrayBuffer().then((b) => new Uint8Array(b)));
 }
 
-// the latest build the workflow published next to this page (firmware/), and what it was built from
-const LATEST = "firmware/elixir-usb-audio.fwsc";
+// the latest builds the workflow published next to this page (firmware/), and what they were built from
+const BUILD_ABOUT = {
+  stereo: "The mix as you hear it, 16-bit stereo, 44.1 or 48 kHz.",
+  "8ch": "Inputs 1–2 the mix or the FX returns with the master chain (CONFIG → USB AUDIO), 3–8 D1 D2 D3 SN CY HH raw. 44.1 kHz.",
+};
 fetch("firmware/build.json", { cache: "no-store" }).then((r) => r.ok ? r.json() : null).catch(() => null).then((info) => {
   latestInfo = info;
-  if (!info) { $("latest-note").textContent = "No build published yet: the build runs on GitHub after each change to the patch."; return; }
+  if (!info) { $("latest-note").textContent = "No build published yet: the builds run on GitHub after each change to the patches."; return; }
+  const builds = info.builds || [{ id: "stereo", name: "Stereo", file: "elixir-usb-audio.fwsc", channels: 2, sha256: info.sha256 }];
   const when = new Date(info.built), commit = (info.elixir_commit || "").slice(0, 7);
   $("latest-note").textContent = `Elixir ${info.elixir_version || "?"} (${commit}), built ${isNaN(when) ? info.built : when.toLocaleDateString()}`;
-  $("latest").disabled = writing;
+  for (const b of builds) {
+    const btn = document.createElement("button"), t = document.createElement("span"), d = document.createElement("span");
+    btn.className = "build"; btn.dataset.id = b.id; btn.disabled = writing;
+    t.className = "t"; t.textContent = b.name || b.id;
+    d.className = "d"; d.textContent = BUILD_ABOUT[b.id] || `${b.channels} channels`;
+    btn.append(t, d);
+    btn.addEventListener("click", () => pickBuild(b, btn));
+    $("builds").append(btn);
+  }
 });
-$("latest").addEventListener("click", () => {
+function pickBuild(b, btn) {
   if (writing || !latestInfo) return;
-  useBytes(`Latest build: Elixir ${latestInfo.elixir_version || ""} with USB audio`, fetch(LATEST, { cache: "no-store" }).then(async (r) => {
-    if (!r.ok) throw new Error(`${LATEST}: HTTP ${r.status}`);
-    const b = new Uint8Array(await r.arrayBuffer());
-    if (latestInfo.sha256) {
-      const d = [...new Uint8Array(await crypto.subtle.digest("SHA-256", b))].map((x) => x.toString(16).padStart(2, "0")).join("");
-      if (d !== latestInfo.sha256) throw new Error("the download doesn't match the published checksum: reload the page");
-    }
-    return b;
-  }));
-});
+  for (const x of document.querySelectorAll("button.build")) x.classList.toggle("picked", x === btn);
+  useBytes(`Latest build: ${b.name || b.id}, Elixir ${latestInfo.elixir_version || ""} with USB audio`,
+    fetch(`firmware/${b.file}`, { cache: "no-store" }).then(async (r) => {
+      if (!r.ok) throw new Error(`firmware/${b.file}: HTTP ${r.status}`);
+      const bytes = new Uint8Array(await r.arrayBuffer());
+      if (b.sha256) {
+        const d = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map((x) => x.toString(16).padStart(2, "0")).join("");
+        if (d !== b.sha256) throw new Error("the download doesn't match the published checksum: reload the page");
+      }
+      return bytes;
+    }));
+}
 $("file").addEventListener("change", () => choose($("file").files[0]));
 const drop = $("drop");
 drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
